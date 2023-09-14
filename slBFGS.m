@@ -14,6 +14,11 @@
 % -------
 %   yc          numerical optimizer (current iterate)
 %   His         iteration history
+%
+% Reference: 
+% 
+% For any questions, 
+% contact: hariom85@gmail.com, mannel@mic.uni-luebeck.com
 %==============================================================================
 
 function [yc,His] = slBFGS(fctn,yc,varargin)
@@ -36,21 +41,23 @@ iter  = 0;
 LSiter = 0;
 % evaluate objective function for starting values and plots
 [Jc,dJ,dD,d2S] = fctn(yc); 
-yold = 0*yc; Jold = Jc; dDold = dD;
+yold = 0*yc; Jold = Jc; dDold = dD; yref = p.xref;
 
+% initial estimate of tau for initializing Hessian
 H0 = d2S;
 tau = norm(dD);
 
-hisStr    = {'iter','J','Jold-J','|\nabla J|','|dy|','LS','Bs','Bg','Bz','tau','ws','wg','wz'};
-his        = zeros(p.maxIter+2,13);
+% for display iteration history
+hisStr    = {'iter','J','Jold-J','|\nabla J|','|dy|','LS','tau','|dy*|'};
+his        = zeros(p.maxIter+2,8);
 his(1,1:3) = [-1,Jold,Jold-Jc];
-his(2,:)   = [0,Jc,Jold-Jc,norm(dJ),norm(yc-yold),0,0,0,0,tau,0,0,0];
+his(2,:)   = [0,Jc,Jold-Jc,norm(dJ),norm(yc-yold),LSiter,tau,norm(yc-yref)];
 
-% some output
+% initial output
 fprintf('%4s %-12s %-12s %-12s %-12s %4s %-12s %-12s %-12s %-12s %-12s %4s %4s\n%s\n',...
   hisStr{:},char(ones(1,120)*'-'));
 dispHis = @(var) ...
-  fprintf('%4d %-12.4e %-12.3e %-12.3e %-12.3e %4d %-12.3e %-12.3e %-12.3e %-12.3e %-12.3e %4d %4d\n',var);
+  fprintf('%4d %-12.4e %-12.3e %-12.3e %-12.3e %4d %-12.3e %-12.3e\n',var);
 dispHis(his(1,:));
 % -- end initMethod   ------------------------------------------------
 
@@ -91,7 +98,11 @@ while 1,
       yy = zz - d2S*ss;
       tau = cal_tau(p,zz,yy,ss,cumin,cumax);
   end
-  H0 = d2S + tau*speye(size(d2S));
+  if ~ismember(p.initMethod,["Hs","Hy"])
+    H0 = d2S + tau*speye(size(d2S));
+  else
+    H0 = tau*speye(size(d2S));
+  end
 
   % compute search direction using recursive and limited BFGS
   [dy] = bfgsrec(p.LSsolver,nBFGS,sBFGS,zBFGS,H0,-dJ',p);
@@ -103,8 +114,8 @@ while 1,
   yold = yc; Jold = Jc; dJold = dJ; yc = yt; dDold = dD;
   [Jc,dJ,dD,d2S] = fctn(yc);  % evaluate objective function
   
-  % some output
-  his(iter+2,:) = [iter,Jc,Jold-Jc,norm(dJ),norm(yc-yold),LSiter,0,0,0,0,0,0,0];
+  % iteration history
+  his(iter+2,:) = [iter,Jc,Jold-Jc,norm(dJ),norm(yc-yold),LSiter,tau,norm(yc - yref)];
   if p.dispHist
     dispHis(his(iter+1,:));
   end
@@ -116,17 +127,10 @@ end;%while; % end of iteration loop
 His.str = hisStr;
 His.his = his(1:iter+2,:);
 fprintf('STOPPING:\n');
-% fprintf('%d[ %-10s=%16.8e <= %-25s=%16.8e]\n',STOP(1),...
-%   '(Jold-Jc)',(Jold-Jc),'tolJ*(1+|Jstop|)',tolJ*(1+abs(Jstop)));
-% fprintf('%d[ %-10s=%16.8e <= %-25s=%16.8e]\n',STOP(2),...
-%   '|yc-yOld|',norm(yc-yOld),'tolY*(1+norm(yc)) ',tolY*(1+norm(yc)));
-% fprintf('%d[ %-10s=%16.8e <= %-25s=%16.8e]\n',STOP(3),...
-%   '|dJ|',norm(dJ),'tolG*(1+abs(Jstop)',tolG*(1+abs(Jstop)));
 fprintf('%d[ %-10s=%16.8e <= %-25s=%16.8e]\n',STOP(4),...
   'norm(dJ)',norm(dJ),'eps',1e3*eps);
 fprintf('%d[ %-10s=  %-14d >= %-25s=  %-14d]\n',STOP(5),...
   'iter',iter,'maxIter',p.maxIter);
-
 
 %==============================================================================
 function[d] = bfgsrec(solver,n,S,Z,H,d,p)
@@ -152,7 +156,7 @@ function p = set_parser()
 p = inputParser;
 
 % parameter initMethod -----------------------------------------------
-addParameter(p,'maxIter',1000); % maximum number of iterations
+addParameter(p,'maxIter',5000); % maximum number of iterations
 addParameter(p,'tolJ',1e-9); % for stopping, objective function
 addParameter(p,'tolY',1e-9); %   - " -     , current value
 addParameter(p,'tolG',1e-9); %   - " -     , norm of gradient
@@ -171,13 +175,7 @@ addParameter(p,'ws',0); % initialize weights for adaptive scheme
 addParameter(p,'wg',0); % initialize weights for adaptive scheme
 addParameter(p,'wz',0); % initialize weights for adaptive scheme
 
-% p.wolfe = ncg('defaults');
-% p.wolfe.LineSearch_ftol = 1e-04;
-% p.wolfe.LineSearch_gtol = 0.9; % 0.9
-% p.wolfe.LineSearch_maxfev = 3000;
-% p.wolfe.LineSearch_stpmax = 2; % 2
-% p.wolfe.LineSearch_stpmin = 0;
-% p.wolfe.LineSearch_xtol = 1e-06;
+addOptional(p,'xref',0); % true value of unknown parameter
 
 %==============================================================================
 function STOP = check_stopping_rules(iter,Jold,Jc,yold,yc,dJ,p)
@@ -186,13 +184,13 @@ function STOP = check_stopping_rules(iter,Jold,Jc,yold,yc,dJ,p)
 %STOP(2) = (iter>0) && (norm(yc-yold) <= p.tolY*(1+norm(yc)));
 %STOP(3) = norm(dJ) <= p.tolG*(1+abs(Jc));
 
-STOP(4) = norm(dJ) <= 1e3*eps;
+STOP(4) = norm(dJ) <= 1e-13;
 STOP(5) = (iter >= p.maxIter);
 %==============================================================================
 function [tau,p] = cal_tau(p,zz,yy,ss,cumin,cumax)
 
 switch p.initMethod
-    case 'Hp'
+    case 'Hs'
         tau = (ss'*zz)/(ss'*ss);
     case 'Hy'
         tau = (zz'*zz)/(ss'*zz);
@@ -249,8 +247,16 @@ tau = max(cumin,min(tau,cumax));
 function [t,yt,LSiter] = lineSearch(fctn,yc,dy,Jc,dJ,p)
 
 if isequal(p.lineSearch,@Wolfe)
+    wolfe = ncg('defaults'); % the standard parameters
+    wolfe.LineSearch_ftol = 1e-04;
+    wolfe.LineSearch_gtol = 0.9; % 0.9
+    wolfe.LineSearch_maxfev = 3000;
+    wolfe.LineSearch_stpmax = 2; % 2
+    wolfe.LineSearch_stpmin = 0;
+    wolfe.LineSearch_xtol = 1e-06;
+
     fcn = @(x) wolfefunc(x,fctn);
-    [yt,~,~,t,info,LSiter] = cvsrch(fcn,yc,Jc,dJ',1,dy,p.wolfe);
+    [yt,~,~,t,info,LSiter] = cvsrch(fcn,yc,Jc,dJ',1,dy,wolfe);
 else
     [t,yt,LSiter] = Armijo(fctn,yc,dy,Jc,dJ,...
                     'LSmaxIter',p.LSmaxIter,'LSreduction',p.LSreduction);
@@ -258,12 +264,6 @@ end
 if (t == 0),
     warning('break! line-search failed');
 end; % break if line-search fails
-%==============================================================================
-function [J,dJ] = LSfunc(tau,y,p,A) % used in invH initialization method
-n = size(y,1);
-B0k = @(tau) tau*speye(n,n) + A;
-J = norm(B0k(tau)\y - p,2)^2;
-dJ = -2*(B0k(tau)^2\y)'*(B0k(tau)\y - p);
 %==============================================================================
 function [J, dJ] = wolfefunc(x,objfctn)
 [J,~,dJ] = objfctn(x);
