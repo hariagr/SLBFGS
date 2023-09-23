@@ -2,7 +2,7 @@
 %
 % function [yc,His] = slBFGS(fctn,yc,varargin)
 %
-% limited structured BFGS optimizer
+% structured limited BFGS optimizer
 %
 % Input:
 % ------
@@ -31,7 +31,7 @@ p = p.Results;
 % cautious update parameters
 cs = 1e-9;
 c0 = 1e-6; c1 = 1e-6; c2 = 1;
-C0 = 1e6; C1 = 1e6; C2 = 1;
+C0 = 1/c0; C1 = 1/c1; C2 = 1/c2;
 
 % -- initialize  ---------------------------------------------------------                                        
 zBFGS = [];     % memory for BFGS gradient directions
