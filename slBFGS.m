@@ -9,7 +9,13 @@
 %   fctn        function handle
 %   yc          starting guess 
 %   varargin    optional parameter, see below
-%
+%               initMethod: scalar methods - Hs, Hy (unstructured)
+%                                          - Bs, Bu, Bg, adap (structured)
+%                           diagonal methods - 'diag-w-x-y-z)
+%                                              w: ds or dg to define diagnoal
+%                                              x: cu or bs to define lower bound
+%                                              y: cu or bz to define upper bound
+%                                              z: es to apply early stopping rule
 % Output:
 % -------
 %   yc          numerical optimizer (current iterate)
@@ -64,10 +70,10 @@ dispHis(his(1,:));
 % ==============================================================================
 % MAIN LOOP
 % ==============================================================================
-while 1,
+while 1
   % check stopping rules
   STOP = check_stopping_rules(iter,Jold,Jc,yold,yc,dJ,p);
-  if all(STOP(1:3)) || any(STOP(4:5)), break;  end;
+  if all(STOP(1:3)) || any(STOP(4:5)), break;  end
   
   iter = iter + 1;
   
@@ -89,23 +95,26 @@ while 1,
   % initialize Hessian
   if iter > 1
       p.Jold = Jold; p.Jc = Jc; p.LSiter = LSiter; p.iter = iter;
+      p.tau = diag(tau); % extract diagonal part 
 
       % cautious update
       cumin = min([c0, c1*norm(dJ)^c2]);
       cumax = max([C0, C1*norm(dJ)^-C2]);
 
       % calculate tau
-      yy = zz - d2S*ss;
-      tau = cal_tau(p,zz,yy,ss,cumin,cumax);
+      yy = zz - d2S(ss);
+      [tau,p] = cal_tau(p,zz,yy,ss,cumin,cumax);
+      tau = spdiag(tau); % convert into a diagonal matrix
   end
-  if ~ismember(p.initMethod,["Hs","Hy"])
-    H0 = d2S + tau*speye(size(d2S));
+  if ismember(p.initMethod,["Hs","Hy"])
+    H0 = tau;
   else
-    H0 = tau*speye(size(d2S));
+    %H0 = d2S + tau*speye(size(d2S));
+    H0 = @(x) d2S(x) + tau*x;
   end
 
   % compute search direction using recursive and limited BFGS
-  [dy] = bfgsrec(p.LSsolver,nBFGS,sBFGS,zBFGS,H0,-dJ',p);
+  [dy, p] = bfgsrec(p.LSsolver,nBFGS,sBFGS,zBFGS,H0,-dJ',p);
 
   % perform linesearch
   [t,yt,LSiter] = lineSearch(fctn,yc,dy,Jc,dJ,p);
@@ -115,12 +124,12 @@ while 1,
   [Jc,dJ,dD,d2S] = fctn(yc);  % evaluate objective function
   
   % iteration history
-  his(iter+2,:) = [iter,Jc,Jold-Jc,norm(dJ),norm(yc-yold),LSiter,tau,norm(yc - yref)];
+  his(iter+2,:) = [iter,Jc,Jold-Jc,norm(dJ),norm(yc-yold),LSiter,min(tau(:)),norm(yc - yref)];
   if p.dispHist
     dispHis(his(iter+1,:));
   end
 
-end;%while; % end of iteration loop
+end %while; % end of iteration loop
 % ==============================================================================
 
 % clean up
@@ -133,21 +142,29 @@ fprintf('%d[ %-10s=  %-14d >= %-25s=  %-14d]\n',STOP(5),...
   'iter',iter,'maxIter',p.maxIter);
 
 %==============================================================================
-function[d] = bfgsrec(solver,n,S,Z,H,d,p)
+function[d,p] = bfgsrec(solver,n,S,Z,H,d,p)
 
 if n == 0
-    switch solver
-        case 'minres'
-            [d,flag,relres,iterPCG,resvec] = minres(Afctn,d,p.tolLS,p.maxIterLS,PC,[]);
-        case 'backslash'
-            d = H\d;
-        otherwise,
-          error('nyi - solver %s', solver)
+    if ismember(p.initMethod,["Hs","Hy"])
+        d = d./diag(H);
+        p.iterPCG = 0;
+    else
+        switch solver
+            case 'minres'
+                [d,flag,relres,iterPCG,resvec] = minres(H,d,p.tolLS,p.maxIterLS);
+            case 'backslash'
+                if isa(H,'function_handle')
+                    error('Backslash solver is not defined for matrix-free method.');
+                end
+                d = H\d;
+            otherwise,
+              error('nyi - solver %s', solver)
+        end
     end
 else
   alpha           = (S(:,n)'*d)/(Z(:,n)'*S(:,n));
   d               = d - alpha*Z(:,n);
-  [d]             = bfgsrec(solver,n-1,S,Z,H,d,p);
+  [d,p]           = bfgsrec(solver,n-1,S,Z,H,d,p);
   d               = d + (alpha - (Z(:,n)'*d)/(Z(:,n)'*S(:,n)))*S(:,n);
 end;
 %==============================================================================
@@ -156,14 +173,14 @@ function p = set_parser()
 p = inputParser;
 
 % parameter initMethod -----------------------------------------------
-addParameter(p,'maxIter',5000); % maximum number of iterations
+addParameter(p,'maxIter',500); % maximum number of iterations
 addParameter(p,'tolJ',1e-9); % for stopping, objective function
 addParameter(p,'tolY',1e-9); %   - " -     , current value
 addParameter(p,'tolG',1e-9); %   - " -     , norm of gradient
 addParameter(p,'maxLBFGS',5);               % maximum number of BFGS vectors
 addParameter(p,'dispHist',1);
-addParameter(p,'initMethod','Bg');
-addParameter(p,'LSsolver','backslash');
+addParameter(p,'initMethod','diag-dg-cu-bz');
+addParameter(p,'LSsolver','minres');
 addParameter(p,'tolLS',1e-2); % linear solve tolerance
 addParameter(p,'maxIterLS',50); % linear solve maximum iterations
 
@@ -184,65 +201,119 @@ function STOP = check_stopping_rules(iter,Jold,Jc,yold,yc,dJ,p)
 %STOP(2) = (iter>0) && (norm(yc-yold) <= p.tolY*(1+norm(yc)));
 %STOP(3) = norm(dJ) <= p.tolG*(1+abs(Jc));
 
-STOP(4) = norm(dJ) <= 1e-13;
+STOP(4) = norm(dJ) <= 1e-9;
 STOP(5) = (iter >= p.maxIter);
 %==============================================================================
 function [tau,p] = cal_tau(p,zz,yy,ss,cumin,cumax)
 
-switch p.initMethod
-    case 'Hs'
-        tau = (ss'*zz)/(ss'*ss);
-    case 'Hy'
-        tau = (zz'*zz)/(ss'*zz);
-    case 'Bs'
-        tau = (ss'*yy)/(ss'*ss);
-    case 'Bg'
-        tau = sqrt((yy'*yy)/(ss'*ss));
-    case 'Bz'
-        tau = (yy'*yy)/(ss'*yy);
-    case 'Bu'
-        mu = 0.5*((ss'*ss + yy'*yy) - sqrt((ss'*ss - yy'*yy)^2 + 4*(ss'*yy)^2));
-        V1  = [ss'*yy; mu - ss'*ss];
-        tau = -V1(1)/V1(2);
-    case 'adap'
-        ws = p.ws; wg = p.wg; wz = p.wz;
-        Jold = p.Jold; Jc = p.Jc; LSiter = p.LSiter;
+% if diagonal initialization
+if numel(p.initMethod) > 4 && (strcmp(p.initMethod(1:4), 'diag'))
+    Bs = (ss'*yy)/(ss'*ss);
+    Bg = sqrt((yy'*yy)/(ss'*ss));
+    Bz = (yy'*yy)/(ss'*yy);
 
-        Bz = max((yy'*yy)/(ss'*yy),cumin);
-        Bs = max((ss'*yy)/(ss'*ss),cumin);
-        Bg = max(sqrt((yy'*yy)/(ss'*ss)),cumin);
+    ds = yy./ss;
+    dg = abs(yy./ss);
 
-        if (ss'*yy) < 0
-            tau = Bg;
+    var = strsplit(p.initMethod,'-');
+    % diagonal approximation
+    if strcmp(var{2},'ds')
+        tau = ds;
+    elseif strcmp(var{2},'dg')
+        tau = dg;
+    else
+        error('wrong input!');
+    end
+
+    % lower bound
+    if strcmp(var{3},'bs')
+        lb = abs(Bs);
+    else
+        lb = NaN;
+    end
+
+    % upper bound
+    if strcmp(var{4},'bz')
+        ub = abs(Bz);
+    elseif strcmp(var{4},'bg')
+        ub = Bg;
+    else
+        ub = NaN;
+    end
+
+    % adaptive early stopping for minres linear solver(ls)
+    if strcmp(var{end},'es')
+        Jold = p.Jold; Jc = p.Jc;
+        if abs(Jold-Jc) <= 1e-4*(abs(Jold))
+            p.maxIterCG = 50;
+        elseif abs(Jold-Jc) <= 1e-3*(abs(Jold))
+            p.maxIterCG = 30;
         else
-            if p.iter == 2 || (ws == 0 && wg == 0 && wz == 0)
-                ws = 0.75; wg = 1 - ws; wz = 0;
-            else
-                if abs(Jold-Jc) <= 1e-4*(abs(Jold))
-                    tc1 = 1/10;
-                elseif abs(Jold-Jc) <= 1e-3*(abs(Jold))
-                    tc1 = 1/20;
-                else
-                    tc1 = 1/40;
-                end
-                tc2 = 1/100;
-
-                if wz == 0.0 && wg < 1
-                    ws = max(ws - tc1*LSiter,0);
-                    wg = 1 - ws; wz = 0.0;
-                elseif wz > 0.0 || wg >= 1
-                    wg = max(wg - tc2*LSiter,0.1);
-                    wz = 1 - wg; ws = 0.0;
-                end
-            end
-            tau = exp(ws*log(Bs) + wg*log(Bg) + wz*log(Bz));
-            
-            p.ws = ws; p.wg = wg; p.wz = wz;
+            p.maxIterCG = 10;
         end
-    otherwise
-        error('%s initialization for Hessian is not defined',p.initMethod)
+    end
+    tau = max(min(tau,ub),lb);
+else % scalar identity initilization scheme
+    switch p.initMethod
+        case 'Hs'
+            tau = (ss'*zz)/(ss'*ss);
+        case 'Hy'
+            tau = (zz'*zz)/(ss'*zz);
+        case 'Hs_st'
+            tau = (ss'*zz)/(ss'*ss) - p.d2S_trace;
+        case 'Hy_st'
+            tau = (zz'*zz)/(ss'*zz) - p.d2S_trace;
+        case 'Bs'
+            tau = (ss'*yy)/(ss'*ss);
+        case 'Bg'
+            tau = sqrt((yy'*yy)/(ss'*ss));
+        case 'Bz'
+            tau = (yy'*yy)/(ss'*yy);
+        case 'Bu'
+            mu = 0.5*((ss'*ss + yy'*yy) - sqrt((ss'*ss - yy'*yy)^2 + 4*(ss'*yy)^2));
+            V1  = [ss'*yy; mu - ss'*ss];
+            tau = -V1(1)/V1(2);
+        case 'adap'
+            ws = p.ws; wg = p.wg; wz = p.wz;
+            Jold = p.Jold; Jc = p.Jc; LSiter = p.LSiter;
+    
+            Bz = max((yy'*yy)/(ss'*yy),cumin);
+            Bs = max((ss'*yy)/(ss'*ss),cumin);
+            Bg = max(sqrt((yy'*yy)/(ss'*ss)),cumin);
+    
+            if (ss'*yy) < 0
+                tau = Bg;
+            else
+                if p.iter == 2 || (ws == 0 && wg == 0 && wz == 0)
+                    ws = 0.75; wg = 1 - ws; wz = 0;
+                else
+                    if abs(Jold-Jc) <= 1e-4*(abs(Jold))
+                        tc1 = 1/10;
+                    elseif abs(Jold-Jc) <= 1e-3*(abs(Jold))
+                        tc1 = 1/20;
+                    else
+                        tc1 = 1/40;
+                    end
+                    tc2 = 1/100;
+    
+                    if wz == 0.0 && wg < 1
+                        ws = max(ws - tc1*LSiter,0);
+                        wg = 1 - ws; wz = 0.0;
+                    elseif wz > 0.0 || wg >= 1
+                        wg = max(wg - tc2*LSiter,0.1);
+                        wz = 1 - wg; ws = 0.0;
+                    end
+                end
+                tau = exp(ws*log(Bs) + wg*log(Bg) + wz*log(Bz));
+                
+                p.ws = ws; p.wg = wg; p.wz = wz;
+            end
+        otherwise
+            error('%s initialization for Hessian is not defined',p.initMethod)
+    end
 end
 tau = max(cumin,min(tau,cumax));
+
 %==============================================================================
 function [t,yt,LSiter] = lineSearch(fctn,yc,dy,Jc,dJ,p)
 
