@@ -1,5 +1,4 @@
-# SLBFGS
-TULIP and ROSE, structured L-BFGS methods for inverse problems
+# Structured L-BFGS methods for inverse problems
 
 Many inverse problems are phrased as unconstrained optimization problems of the form  
 $$J(x) = D(x) + S(x)$$
